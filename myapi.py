@@ -1,5 +1,5 @@
-from typing import Optional
-from fastapi import FastAPI, HTTPException
+from typing import Optional,List,Union
+from fastapi import FastAPI,HTTPException
 from fastapi.responses import JSONResponse
 from bson import ObjectId
 from pymongo import MongoClient
@@ -12,18 +12,44 @@ db = client["mydatabase"]
 collection = db["books"]
 
 class Book(BaseModel):
-    title: str
-    author: str
-    year: int
+    id: str
+    type: str = "articles"
+    attributes: dict
+
+class ArticleAuthor(BaseModel):
+    id: str
+    type: str = "people"
+    links: dict
+
+class ArticleComment(BaseModel):
+    id: str
+    type: str = "comments"
+
+class ArticleData(BaseModel):
+    id: str
+    type: str = "articles"
+    attributes: dict
+    relationships: dict
+    links: dict
+
+class ArticleResponse(BaseModel):
+    links: dict
+    data: List[ArticleData]
+    included: List[Union[ArticleAuthor, ArticleComment]]
 
 @app.get("/List_Of_Books")
 async def get_books():
-    collection = db["books"]
     try:
         books = list(collection.find())
+        count = len(books)
         for book in books:
             book["_id"] = str(book["_id"])  # Convert ObjectId to string
-        return {"data": books}
+        serialized_books = [
+            Book(id=str(book["_id"]), attributes={"title": book["title"]}).dict()
+            for book in books
+        ]
+        response_data = {"count":count, "data": serialized_books}
+        return JSONResponse(content=response_data)
     except PyMongoError as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -54,28 +80,48 @@ async def get_books_sort(sort: Optional[str] = None, filter: Optional[str] = Non
 
         # Serialize books
         serialized_books = [
-            Book(title=book["title"], author=book["author"], year=book["year"])
+            Book(id=str(book["_id"]), attributes={"title": book["title"]}).dict()
             for book in books
         ]
 
-        response_data = {"data": [book.dict() for book in serialized_books]}
+        response_data = {"data": serialized_books}
         return JSONResponse(content=response_data)
     except PyMongoError as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/Find_Book")
 def get_book_find(book_id: str):
     try:
         book = collection.find_one({"_id": ObjectId(book_id)})
         if book:
-            book_data = {
-                "title": book["title"],
-                "author": book["author"],
-                "year": book["year"],
+            book_attributes = {"title": book["title"], "author": book["author"], "year": book["year"]}
+            author_id = str(book["_id"])
+            author_links = {
+                "self": f"http://Raja_Kannan_example.com/articles/1/relationships/author",
+                "related": f"http://Skill_Rackexample.com/articles/1/author"
             }
-            response_data = {"data": book_data}
-            return JSONResponse(content=response_data)
+            author = ArticleAuthor(id=author_id, links=author_links)
+            comments = [
+                ArticleComment(id=str(comment["_id"]))
+                for comment in collection.find({"book_id": ObjectId(book_id)})
+            ]
+            article_data = ArticleData(
+                id=str(book["_id"]),
+                attributes=book_attributes,
+                relationships={"author": {"data": author}, "comments": {"data": comments}},
+                links={"self": f"http://samplebyRkexample.com/articles/{book_id}"},
+            )
+            included_data = [author] + comments
+            response_data = ArticleResponse(
+                links={
+                    "self": "http://example.com/articles",
+                    "next": "http://example.com/articles?page[offset]=2",
+                    "last": "http://example.com/articles?page[offset]=10"
+                },
+                data=[article_data],
+                included=included_data
+            )
+            return JSONResponse(content=response_data.dict())
         else:
             raise HTTPException(status_code=404, detail="Book not found")
     except Exception as e:
@@ -88,8 +134,9 @@ def create_book(title: str, author: str, year: int):
         book_data = {"title": title, "author": author, "year": year}
         inserted_book = collection.insert_one(book_data)
         book_id = str(inserted_book.inserted_id)
-        book = Book(title=title, author=author, year=year)
-        response_data = {"data": book.dict()}
+        book = Book(id=book_id, attributes={"title": title, "author": author, "year": year})
+        count =collection.count_documents({})
+        response_data = {"count":count,"data": book.dict()}
         return JSONResponse(content=response_data, status_code=201)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
